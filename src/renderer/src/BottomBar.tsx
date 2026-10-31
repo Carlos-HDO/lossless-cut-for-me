@@ -1,7 +1,7 @@
 import type { CSSProperties, ClipboardEvent, Dispatch, SubmitEvent, KeyboardEvent, SetStateAction } from 'react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'motion/react';
-import { MdRotate90DegreesCcw } from 'react-icons/md';
+import { MdCrop, MdRotate90DegreesCcw } from 'react-icons/md';
 import { useTranslation } from 'react-i18next';
 import { IoIosCamera, IoMdKey, IoMdSpeedometer } from 'react-icons/io';
 import { FaYinYang, FaTrashAlt, FaStepBackward, FaStepForward, FaCaretLeft, FaCaretRight, FaPause, FaPlay, FaImages, FaKey, FaExclamationTriangle } from 'react-icons/fa';
@@ -282,6 +282,7 @@ const CutTimeInput = memo(({ disabled, darkMode, cutTime, setCutTime, startTimeO
 function BottomBar({
   zoom, setZoom, timelineToggleComfortZoom,
   isRotationSet, rotation, areWeCutting, increaseRotation, cleanupFilesDialog,
+  isCropSet, onCropClick,
   captureSnapshot, onExportPress, segmentsToExport, hasVideo,
   seekAbs, currentSegIndexSafe, cutSegments, currentCutSeg, setCutStart, setCutEnd,
   setCurrentSegIndex,
@@ -302,6 +303,8 @@ function BottomBar({
   areWeCutting: boolean,
   increaseRotation: () => void,
   cleanupFilesDialog: () => void,
+  isCropSet?: boolean | undefined,
+  onCropClick?: () => void,
   captureSnapshot: () => void,
   onExportPress: () => void,
   segmentsToExport: SegmentToExport[],
@@ -610,6 +613,16 @@ function BottomBar({
               title={actionTitle(`${t('Set output rotation. Current: ')} ${isRotationSet ? rotationStr : t('Don\'t modify')}`, 'increaseRotation')}
             />
             <span style={{ textAlign: 'right', display: 'inline-block', fontSize: '.8em', marginLeft: '.1em' }}>{isRotationSet && rotationStr}</span>
+          </div>
+        )}
+
+        {isFileOpened && !simpleMode && hasVideo && onCropClick != null && (
+          <div onClick={onCropClick} role="button" style={{ whiteSpace: 'nowrap' }}>
+            <MdCrop
+              style={{ fontSize: '1.3em', verticalAlign: 'middle', color: isCropSet ? primaryTextColor : undefined }}
+              title={t('Crop video (Video effects)')}
+            />
+            {isCropSet && <span style={{ textAlign: 'right', display: 'inline-block', fontSize: '.8em', marginLeft: '.1em', color: primaryTextColor }}>{t('Crop')}</span>}
           </div>
         )}
 

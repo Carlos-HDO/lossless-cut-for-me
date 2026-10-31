@@ -407,7 +407,14 @@ function MediaSourcePlayer({ rotate, filePath, videoStream, audioStreams, master
   }, []);
 
   const videoStyle = useMemo<CSSProperties>(() => ({
-    ...baseVideoStyle, position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, display: 'block', transform: rotate ? `rotate(${rotate}deg)` : undefined,
+    ...baseVideoStyle,
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    display: 'block',
+    transform: [baseVideoStyle?.transform, rotate ? `rotate(${rotate}deg)` : undefined].filter(Boolean).join(' ') || undefined,
   }), [baseVideoStyle, rotate]);
 
   return (

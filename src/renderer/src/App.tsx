@@ -1,7 +1,7 @@
 import type { CSSProperties, ReactEventHandler, FocusEventHandler, DragEventHandler } from 'react';
 import { memo, useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { FaRegTimesCircle } from 'react-icons/fa';
-import { MdRotate90DegreesCcw } from 'react-icons/md';
+import { MdCrop, MdRotate90DegreesCcw } from 'react-icons/md';
 import { AnimatePresence, MotionConfig } from 'motion/react';
 import i18n from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -50,7 +50,7 @@ import OutputFormatSelect from './components/OutputFormatSelect';
 import * as Dialog from './components/Dialog';
 
 import { loadMifiLink, runStartupCheck } from './mifi';
-import { darkModeTransition } from './colors';
+import { darkModeTransition, primaryTextColor } from './colors';
 import { getSegColor } from './util/colors';
 import type {
   FileFfprobeMeta } from './ffmpeg';
@@ -64,7 +64,7 @@ import {
   mapRecommendedDefaultFormat,
   getFfCommandLine,
 } from './ffmpeg';
-import { shouldCopyStreamByDefault, getAudioStreams, getRealVideoStreams, isAudioDefinitelyNotSupported, willPlayerProperlyHandleVideo, doesPlayerSupportHevcPlayback, getSubtitleStreams, enableVideoTrack, enableAudioTrack, canHtml5PlayerPlayStreams, isMatroska } from './util/streams';
+import { shouldCopyStreamByDefault, getAudioStreams, getRealVideoStreams, isAudioDefinitelyNotSupported, willPlayerProperlyHandleVideo, doesPlayerSupportHevcPlayback, getSubtitleStreams, enableVideoTrack, enableAudioTrack, canHtml5PlayerPlayStreams, isMatroska, isCropActive } from './util/streams';
 import { needsHvc1Tag } from './util/metadata';
 import { exportEdlFile, readEdlFile, loadLlcProject, askForEdlImport } from './edlStore';
 import { formatYouTube, getFrameCountRaw, formatTsvHuman } from './edlFormats';
@@ -98,8 +98,9 @@ import type { GenerateMergedOutFileNamesParams, GeneratedOutFileNames } from './
 import { generateCutFileNames as generateCutFileNamesRaw, generateCutMergedFileNames as generateCutMergedFileNamesRaw, generateMergedFileNames as generateMergedFileNamesRaw, defaultCutFileTemplate, defaultCutMergedFileTemplate, defaultMergedFileTemplate } from './util/outputNameTemplate';
 import { rightBarWidth, leftBarWidth, ffmpegExtractWindow, zoomMax } from './util/constants';
 import BigWaveform from './components/BigWaveform';
+import CropDialog from './components/CropDialog';
 
-import type { BatchFile, Chapter, EdlExportType, EdlFileType, EdlImportType, FfmpegCommandLog, FilesMeta, FileStats, ParamsByFile, PlaybackMode, SegmentBase, SegmentColorIndex, SegmentTags, StateSegment, TunerType } from './types';
+import type { BatchFile, BsfCropParams, Chapter, EdlExportType, EdlFileType, EdlImportType, FfmpegCommandLog, FilesMeta, FileStats, ParamsByFile, PlaybackMode, SegmentBase, SegmentColorIndex, SegmentTags, StateSegment, TunerType } from './types';
 import { goToTimecodeDirectArgsSchema } from './types';
 import type { CaptureFormat, KeyboardAction, ApiActionRequest } from '../../common/types.js';
 import { openFilesActionArgsSchema } from '../../common/types.js';
@@ -152,6 +153,17 @@ function App() {
   const [fileDuration, setFileDuration] = useState<number>();
   const [externalFilesMeta, setExternalFilesMeta] = useState<FilesMeta>({});
   const [paramsByFile, setParamsByFile] = useState<ParamsByFile>(new Map());
+
+  const updateStreamParams = useCallback<Parameters<typeof StreamsSelector>[0]['updateStreamParams']>((fileId, streamId, setter) => setParamsByFile(produce((draft) => {
+    if (!draft.has(fileId)) draft.set(fileId, { metadata: {}, paramsByStream: new Map() });
+    const fileMap = draft.get(fileId);
+    invariant(fileMap != null);
+    if (!fileMap.paramsByStream.has(streamId)) fileMap.paramsByStream.set(streamId, { metadata: {} });
+
+    const params = fileMap.paramsByStream.get(streamId);
+    invariant(params != null);
+    setter(params);
+  })), [setParamsByFile]);
   const [detectedFps, setDetectedFps] = useState<number>();
   const [mainFileMeta, setMainFileMeta] = useState<{ ffprobeMeta: FileFfprobeMeta, stats: FileStats }>();
   const [streamsSelectorShown, setStreamsSelectorShown] = useState(false);
@@ -204,8 +216,6 @@ function App() {
 
   // Note that each action may be multiple key bindings and this will only be the first binding for each action
   const keyBindingByAction = useMemo(() => Object.fromEntries(keyBindings.map((binding) => [binding.action, binding])), [keyBindings]);
-
-  const mainVideoStyle = useMemo<CSSProperties>(() => ({ ...videoStyle, objectFit: videoFit }), [videoFit]);
 
   const { working, setWorking, workingRef, abortWorking } = useLoading();
   const { videoRef, videoContainerRef, playbackRate, setPlaybackRate, outputPlaybackRate, setOutputPlaybackRate, commandedTime, seekAbs, playingRef, getRelevantTime, setPlaying, onSeeked, relevantTime, onStartPlaying, setCommandedTime, setOutputPlaybackRateState, commandedTimeRef, onStopPlaying, onVideoAbort, playerTime, setPlayerTime, playbackMode, setPlaybackMode, playbackModeRef, playing, play, pause, seekRel } = useVideo({ filePath });
@@ -334,6 +344,47 @@ function App() {
   // 360 means we don't modify rotation gtrgt
   const isRotationSet = rotation !== 360;
   const effectiveRotation = useMemo(() => (isRotationSet ? rotation : (activeVideoStream?.tags?.rotate ? parseInt(activeVideoStream.tags.rotate, 10) : undefined)), [isRotationSet, activeVideoStream, rotation]);
+
+  const [cropDialogOpen, setCropDialogOpen] = useState(false);
+
+  const activeCrop = useMemo(() => {
+    if (!filePath || !activeVideoStream) return undefined;
+    return paramsByFile.get(filePath)?.paramsByStream.get(activeVideoStream.index)?.crop;
+  }, [filePath, activeVideoStream, paramsByFile]);
+
+  const isCropSet = isCropActive(activeCrop);
+
+  const handleUpdateCrop = useCallback((newCrop: BsfCropParams) => {
+    if (!filePath || !activeVideoStream) return;
+    updateStreamParams(filePath, activeVideoStream.index, (params) => {
+      // eslint-disable-next-line no-param-reassign
+      params.crop = newCrop;
+    });
+  }, [filePath, activeVideoStream, updateStreamParams]);
+
+  const cropTransformStyle = useMemo<CSSProperties>(() => {
+    if (!isCropActive(activeCrop) || !activeVideoStream?.width || !activeVideoStream?.height) return {};
+    const { left, right, top, bottom } = activeCrop;
+    const origW = activeVideoStream.width;
+    const origH = activeVideoStream.height;
+    const cropW = origW - left - right;
+    const cropH = origH - top - bottom;
+    if (cropW <= 0 || cropH <= 0) return {};
+    const sx = origW / cropW;
+    const sy = origH / cropH;
+    const shiftXPct = -((left - right) / (2 * origW)) * 100;
+    const shiftYPct = -((top - bottom) / (2 * origH)) * 100;
+    return {
+      transform: `scale(${sx}, ${sy}) translate(${shiftXPct}%, ${shiftYPct}%)`,
+      transformOrigin: 'center center',
+    };
+  }, [activeCrop, activeVideoStream]);
+
+  const mainVideoStyle = useMemo<CSSProperties>(() => ({
+    ...videoStyle,
+    objectFit: videoFit,
+    ...cropTransformStyle,
+  }), [videoFit, cropTransformStyle]);
 
   const zoomAbs = useCallback((fn: (v: number) => number) => setZoom((z) => Math.min(Math.max(fn(z), 1), zoomMax)), []);
   const zoomRel = useCallback((rel: number) => zoomAbs((z) => z + (rel * (1 + (z / 10)))), [zoomAbs]);
@@ -1793,17 +1844,6 @@ function App() {
 
   const hvc1NeededStreams = useMemo(() => copyFileStreams.flatMap(({ path, streamIds }) => (allFilesMeta[path]?.streams ?? []).filter((stream) => streamIds.includes(stream.index) && needsHvc1Tag({ stream, outFormat: fileFormat, customTag: paramsByFile.get(path)?.paramsByStream.get(stream.index)?.tag }))), [allFilesMeta, copyFileStreams, fileFormat, paramsByFile]);
 
-  const updateStreamParams = useCallback<Parameters<typeof StreamsSelector>[0]['updateStreamParams']>((fileId, streamId, setter) => setParamsByFile(produce((draft) => {
-    if (!draft.has(fileId)) draft.set(fileId, { metadata: {}, paramsByStream: new Map() });
-    const fileMap = draft.get(fileId);
-    invariant(fileMap != null);
-    if (!fileMap.paramsByStream.has(streamId)) fileMap.paramsByStream.set(streamId, { metadata: {} });
-
-    const params = fileMap.paramsByStream.get(streamId);
-    invariant(params != null);
-    setter(params);
-  })), [setParamsByFile]);
-
   const captureSnapshotAsCoverArt = useCallback(async () => {
     if (!filePath) return;
     await withErrorHandling(async () => {
@@ -2577,7 +2617,7 @@ function App() {
                   <div style={{ position: 'relative', flexGrow: 1, overflow: 'hidden' }} ref={videoContainerRef}>
                     {!isFileOpened && <NoFileLoaded mifiLink={mifiLink} currentCutSeg={currentCutSeg} onClick={openFilesDialog} darkMode={darkMode} keyBindingByAction={keyBindingByAction} />}
 
-                    <div className="no-user-select" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, visibility: !isFileOpened || !hasVideo || bigWaveformEnabled ? 'hidden' : undefined }} onWheel={onTimelineWheel}>
+                    <div className="no-user-select" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, overflow: 'hidden', visibility: !isFileOpened || !hasVideo || bigWaveformEnabled ? 'hidden' : undefined }} onWheel={onTimelineWheel}>
                       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
                       <video
                         className={styles['video']}
@@ -2603,6 +2643,13 @@ function App() {
                     </div>
 
                     {bigWaveformEnabled && <BigWaveform waveforms={waveforms} relevantTime={relevantTime} playing={playing} fileDurationNonZero={fileDurationNonZero} zoom={zoomUnrounded} seekRel={seekRel} darkMode={darkMode} />}
+
+                    {isCropSet && activeCrop != null && (
+                      <div style={{ position: 'absolute', top: 0, left: 0, marginTop: isRotationSet ? '3.5em' : '1em', marginLeft: '1em', color: 'var(--gray-12)', opacity: 0.8, display: 'flex', alignItems: 'center', pointerEvents: 'none', background: 'rgba(0,0,0,0.5)', padding: '.2em .6em', borderRadius: '.4em', fontSize: '.9em' }}>
+                        <MdCrop size={18} style={{ marginRight: 6, color: primaryTextColor }} />
+                        <span>{t('Crop active:')} {activeCrop.left}L {activeCrop.top}T {activeCrop.right}R {activeCrop.bottom}B</span>
+                      </div>
+                    )}
 
                     {compatPlayerEnabled && (
                       <div style={{ position: 'absolute', top: 0, right: 0, left: 0, marginTop: '1em', marginLeft: '1em', color: 'var(--gray-12)', opacity: 0.7, display: 'flex', alignItems: 'center', pointerEvents: 'none' }}>
@@ -2743,6 +2790,8 @@ function App() {
                     rotation={rotation}
                     areWeCutting={areWeCutting}
                     increaseRotation={increaseRotation}
+                    isCropSet={isCropSet}
+                    onCropClick={() => setCropDialogOpen(true)}
                     cleanupFilesDialog={cleanupFilesDialog}
                     captureSnapshot={captureSnapshot}
                     onExportPress={onExportPress}
@@ -2862,6 +2911,14 @@ function App() {
                 </Dialog.Root>
 
                 <ConcatDialog isShown={batchFiles.length > 0 && concatDialogOpen} onHide={() => setConcatDialogOpen(false)} paths={batchFilePaths} mergedFileTemplate={mergedFileTemplateOrDefault} generateMergedFileNames={generateMergedFileNames} onConcat={userConcatFiles} setAlwaysConcatMultipleFiles={setAlwaysConcatMultipleFiles} alwaysConcatMultipleFiles={alwaysConcatMultipleFiles} fileFormat={fileFormat} setFileFormat={setFileFormat} detectedFileFormat={detectedFileFormat} setDetectedFileFormat={setDetectedFileFormat} onOutputFormatUserChange={onOutputFormatUserChange} />
+
+                <CropDialog
+                  isOpen={cropDialogOpen}
+                  onClose={() => setCropDialogOpen(false)}
+                  stream={activeVideoStream}
+                  currentCrop={activeCrop}
+                  onUpdateCrop={handleUpdateCrop}
+                />
 
                 <KeyboardShortcuts isShown={keyboardShortcutsVisible} onHide={() => setKeyboardShortcutsVisible(false)} keyBindings={keyBindings} setKeyBindings={setKeyBindings} currentCutSeg={currentCutSeg} resetKeyBindings={resetKeyBindings} getKeyboardAction={getKeyboardAction} />
 
